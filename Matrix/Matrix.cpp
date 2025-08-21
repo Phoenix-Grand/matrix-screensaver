@@ -1,9 +1,11 @@
-// Matrix.cpp — portable settings + proper Configure window
+// Matrix.cpp — portable settings with non-colliding symbol names
 // - Saves to matrix-settings-portable.cfg (exe folder if writable, else %APPDATA%\Matrix\)
-// - Shows the settings path in the Configure window.
+// - Configure window implemented as a normal window (no .rc), shows config path
+// - Portable functions renamed to avoid conflicts:
+//     LoadSettingsPortable / SaveSettingsPortable / ConfigurePortable
 
 #include <windows.h>
-#include <commctrl.h>   // trackbars, buttons
+#include <commctrl.h>
 #include <tchar.h>
 #include <stdio.h>
 #include <shlobj.h>     // SHGetFolderPath, SHCreateDirectoryEx
@@ -47,11 +49,15 @@ BOOL FontBold          = TRUE;
 BOOL RandomizeMessages = FALSE;
 TCHAR szFontName[512]  = _T("MS Sans Serif");
 
-void LoadSettings(void);
+// NOTE: DO NOT declare LoadSettings() here; Settings.cpp provides it.
+// We provide our own portable versions with different names.
+static void LoadSettingsPortable(void);
+static void SaveSettingsPortable(void);
+static LRESULT CALLBACK CfgWndProc(HWND, UINT, WPARAM, LPARAM);
+int  ConfigurePortable(HWND hwndParent);
 
 LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
 
-int  Configure(HWND hwndParent);
 BOOL ChangePassword(HWND hwnd);
 BOOL VerifyPassword(HWND hwnd);
 
@@ -124,7 +130,6 @@ static void GetConfigPath(TCHAR* outPath, size_t cchOut) {
     // 2) Fallback: %APPDATA%\Matrix\matrix-settings-portable.cfg
     TCHAR appdata[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata))) {
-        // declare folder buffer here (fixes 'folder: undeclared identifier')
         TCHAR folder[MAX_PATH];
         lstrcpyn(folder, appdata, MAX_PATH);
         size_t len = lstrlen(folder);
@@ -136,7 +141,6 @@ static void GetConfigPath(TCHAR* outPath, size_t cchOut) {
         }
         EnsureDirExists(folder);
 
-        // Full file path
         lstrcpyn(outPath, folder, (int)cchOut);
         len = lstrlen(outPath);
         if (len > 0 && outPath[len-1] != TEXT('\\')) {
@@ -161,7 +165,7 @@ static void ClampSettings() {
     if (FontSize    > 30) FontSize    = 30;
 }
 
-void LoadSettings(void) {
+static void LoadSettingsPortable(void) {
     GetConfigPath(gCfgPath, MAX_PATH);
 
     MessageSpeed      = GetPrivateProfileInt(kIniSection, _T("MessageSpeed"),      MessageSpeed,      gCfgPath);
@@ -177,8 +181,7 @@ void LoadSettings(void) {
     ClampSettings();
 }
 
-static void SaveSettings(void) {
-    // ints as strings
+static void SaveSettingsPortable(void) {
     TCHAR buf[32];
 
     _stprintf_s(buf, _T("%d"), MessageSpeed);      WritePrivateProfileString(kIniSection, _T("MessageSpeed"),      buf, gCfgPath);
@@ -189,7 +192,6 @@ static void SaveSettings(void) {
     _stprintf_s(buf, _T("%d"), RandomizeMessages ? 1 : 0);
     WritePrivateProfileString(kIniSection, _T("RandomizeMessages"), buf, gCfgPath);
 
-    // string
     WritePrivateProfileString(kIniSection, _T("FontName"), szFontName, gCfgPath);
 }
 
@@ -304,7 +306,7 @@ void InitMatrix(HWND hwnd)
 {
     matrix = new Matrix[maxcols];
     for (int i = 0; i < maxcols; i++) matrix[i].Init(maxrows);
-    SetTimer(hwnd, 0xDeadBeef, MatrixSpeed * 10, 0); // uses MatrixSpeed
+    SetTimer(hwnd, 0xDeadBeef, MatrixSpeed * 10, 0);
 }
 
 // ===================== Normal app / saver plumbing =====================
@@ -400,7 +402,6 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE, PSTR szCmdLine, int iCmdShow
     hInst = hInstance;
     (void)GetCommandLine();
 
-    // Single-instance guard
     if (FindWindowEx(NULL, NULL, szAppName, szAppName)) return 0;
 
     SetRect(&ScreenSize, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
@@ -409,15 +410,17 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE, PSTR szCmdLine, int iCmdShow
     maxcols = ScreenSize.right / xChar;
     maxrows = ScreenSize.bottom / yChar + 1;
 
-    LoadSettings();
+    // Use our portable loader here; avoids symbol collision with Settings.cpp's LoadSettings()
+    LoadSettingsPortable();
 
     GetCommandLineOption(szCmdLine, &chOption, &hwndParent);
 
-    switch (chOption) {
+    switch (chOption)
+    {
         case 's': return ScreenSave();              // screen saver
         case 'p': return 0;                         // preview (shell-hosted)
         case 'a': return ChangePassword(hwndParent);
-        case 'c': return Configure(hwndParent);     // configuration
+        case 'c': return ConfigurePortable(hwndParent); // use portable config
         default:  return Normal(iCmdShow);
     }
 }
@@ -583,7 +586,6 @@ static void WriteGlobalsIntoControls(HWND h)
 
     SetDlgItemText(h, IDC_FONTNAME, szFontName);
 
-    // show the settings path
     SetDlgItemText(h, IDC_CFGPATH, gCfgPath);
 }
 
@@ -622,21 +624,19 @@ static void CreateConfigChildren(HWND hDlg)
         WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL, xR, y, w - xR - 12, 22, hDlg, (HMENU)IDC_FONTNAME, hInst, 0);
     y += 30;
 
-    // Config file path label
     CreateWindowEx(0, WC_STATIC, _T("Config file:"),
         WS_CHILD|WS_VISIBLE, xL, rc.bottom - 60, 100, 18, hDlg, 0, hInst, 0);
     CreateWindowEx(WS_EX_CLIENTEDGE, WC_STATIC, gCfgPath,
         WS_CHILD|WS_VISIBLE|SS_LEFT, xR, rc.bottom - 64, w - xR - 12, 24, hDlg, (HMENU)IDC_CFGPATH, hInst, 0);
 
-    // OK / Cancel
     CreateWindowEx(0, WC_BUTTON, _T("OK"),
         WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON, w-180, rc.bottom-36, 80, 24, hDlg, (HMENU)IDOK, hInst, 0);
     CreateWindowEx(0, WC_BUTTON, _T("Cancel"),
         WS_CHILD|WS_VISIBLE, w-92, rc.bottom-36, 80, 24, hDlg, (HMENU)IDCANCEL, hInst, 0);
 }
 
-// 🔧 FIX: use a normal window proc signature (matches WNDPROC)
-static LRESULT CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+// Normal window proc for the Configure window
+static LRESULT CALLBACK CfgWndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
@@ -644,7 +644,6 @@ static LRESULT CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
     {
         INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_BAR_CLASSES|ICC_STANDARD_CLASSES };
         InitCommonControlsEx(&icc);
-        // refresh gCfgPath (in case location changed due to permissions)
         GetConfigPath(gCfgPath, MAX_PATH);
         CreateConfigChildren(hDlg);
         WriteGlobalsIntoControls(hDlg);
@@ -654,7 +653,7 @@ static LRESULT CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
         switch (LOWORD(wParam)) {
             case IDOK:
                 ReadControlsIntoGlobals(hDlg);
-                SaveSettings();
+                SaveSettingsPortable();
                 DestroyWindow(hDlg);
                 return 0;
             case IDCANCEL:
@@ -669,14 +668,14 @@ static LRESULT CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
     return DefWindowProc(hDlg, msg, wParam, lParam);
 }
 
-int Configure(HWND hwndParent)
+int ConfigurePortable(HWND hwndParent)
 {
     WNDCLASS wc{};
-    wc.lpfnWndProc   = CfgDlgProc;  // now matches WNDPROC
+    wc.lpfnWndProc   = CfgWndProc;
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_3DFACE+1);
-    wc.lpszClassName = _T("MatrixCfgWnd");
+    wc.lpszClassName = _T("MatrixCfgWndPortable");
     RegisterClass(&wc);
 
     int W = 560, H = 340;
@@ -685,7 +684,6 @@ int Configure(HWND hwndParent)
                             CW_USEDEFAULT, CW_USEDEFAULT, W, H,
                             hwndParent, NULL, hInst, NULL);
 
-    // center
     RECT rc; GetWindowRect(h, &rc);
     int sw = GetSystemMetrics(SM_CXSCREEN);
     int sh = GetSystemMetrics(SM_CYSCREEN);
