@@ -1,7 +1,7 @@
 name: Build Matrix (EXE + SCR)
 
 on:
-  workflow_dispatch:     # manual Run workflow button
+  workflow_dispatch:   # manual trigger
   push:
     branches: [ main ]
   pull_request:
@@ -16,21 +16,22 @@ jobs:
     runs-on: windows-latest
     env:
       CONFIG: Release
-      PLATFORM: Win32     # this solution is Win32; x64 often isn’t defined
+      PLATFORM: Win32
 
     steps:
       - name: Checkout
+      # v4 for checkout
         uses: actions/checkout@v4
 
-      - name: MSVC dev cmd
+      - name: MSVC dev cmd (x86 toolset for Win32)
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x86        # matches Win32 platform
+          arch: x86
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # Optional: generate version.h from tag (vMAJ.MIN.PAT)
+      # Optional: version header from tag vMAJ.MIN.PAT
       - name: Generate version.h (from tag)
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -50,7 +51,7 @@ jobs:
             echo "Tag not in vX.Y.Z; skipping version header."
           fi
 
-      # Try MSBuild first – and always produce a binlog
+      # Try MSBuild first (don’t fail job); always upload the binlog
       - name: Build with MSBuild
         shell: pwsh
         continue-on-error: true
@@ -69,40 +70,62 @@ jobs:
           path: msbuild.binlog
           if-no-files-found: ignore
 
-      # If MSBuild didn’t produce an EXE, fall back to a manual cl/rc build.
-      - name: Fallback build with cl/rc
+      # Fallback: compile resources + ALL .cpp sources with cl
+      - name: Fallback build with cl/rc (compile all sources)
         if: always()
         shell: pwsh
         run: |
-          # See if MSBuild already produced an .exe
-          $exe = Get-ChildItem -Recurse -Filter *.exe -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          # If MSBuild already made an .exe, use it
+          $exe = Get-ChildItem -Recurse -Filter *.exe -ErrorAction SilentlyContinue |
+                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($exe) {
             Write-Host "MSBuild produced: $($exe.FullName) – skipping fallback."
             echo "OUT_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
             exit 0
           }
 
-          Write-Host "No EXE found; running fallback cl/rc compile..."
+          Write-Host "No EXE found; running fallback cl/rc compile…"
 
-          # Compile resources -> .res
-          rc /nologo /fo Matrix\resource\resource.res Matrix\resource\resource.rc
+          # Show tree for debugging
+          Get-ChildItem -Recurse -File | Out-String -Width 4096 | Out-File tree.txt
 
-          # Build the screensaver (uses your updated portable settings code in Matrix/matrix.cpp)
-          # Add libs used by the project
-          cl /nologo /O2 /W3 /DUNICODE /D_UNICODE `
-             /I Matrix\resource `
-             Matrix\matrix.cpp Matrix\resource\resource.res `
-             user32.lib gdi32.lib comctl32.lib shell32.lib `
-             /link /SUBSYSTEM:WINDOWS /OUT:matrix-fallback.exe
+          # Compile resources (ensure include path to resource.h)
+          rc /nologo /I Matrix\resource /fo Matrix\resource\resource.res Matrix\resource\resource.rc 2>&1 | Tee-Object -FilePath rc.log
 
-          if (!(Test-Path matrix-fallback.exe)) { throw "Fallback build failed" }
+          # Collect all C++ files in Matrix\
+          $cpps = (Get-ChildItem Matrix -Recurse -Include *.cpp | ForEach-Object { $_.FullName }) -join ' '
+
+          if (-not $cpps) { throw "No .cpp files found in Matrix folder." }
+
+          # Build (add common Win32 libs used by this saver)
+          # If you later see unresolved externals, tell me the symbol names and I’ll add the lib.
+          cmd /c "cl /nologo /O2 /W3 /DUNICODE /D_UNICODE ^
+            /I Matrix /I Matrix\resource ^
+            $cpps Matrix\resource\resource.res ^
+            user32.lib gdi32.lib comctl32.lib shell32.lib comdlg32.lib advapi32.lib ole32.lib oleaut32.lib uuid.lib ^
+            /link /SUBSYSTEM:WINDOWS /OUT:matrix-fallback.exe" 1> cl.log 2>&1
+
+          if (!(Test-Path matrix-fallback.exe)) { 
+            Write-Host "Fallback build failed. See rc.log / cl.log."
+            throw "Fallback build failed" 
+          }
           echo "OUT_EXE=$((Resolve-Path matrix-fallback.exe).Path)" >> $env:GITHUB_ENV
+
+      - name: Upload text logs (tree/rc/cl)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fallback-logs
+          path: |
+            tree.txt
+            rc.log
+            cl.log
+          if-no-files-found: ignore
 
       - name: Package outputs
         shell: pwsh
         run: |
           if (-not $env:OUT_EXE) {
-            # If MSBuild succeeded, OUT_EXE might still be empty; find newest exe
             $found = Get-ChildItem -Recurse -Filter *.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if ($found) { $env:OUT_EXE = $found.FullName }
           }
@@ -111,7 +134,7 @@ jobs:
           Write-Host "Using EXE: $env:OUT_EXE"
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item "$env:OUT_EXE" "out\matrix-win32.exe" -Force
-          Copy-Item "$env:OUT_EXE" "out\matrix-win32.scr" -Force   # .scr is just the exe renamed
+          Copy-Item "$env:OUT_EXE" "out\matrix-win32.scr" -Force   # screensavers are EXEs renamed
 
           $zip = "Matrix_${{ env.CONFIG }}_${{ env.PLATFORM }}.zip"
           $toZip = @("out\matrix-win32.exe","out\matrix-win32.scr")
