@@ -1,4 +1,4 @@
-// Matrix.cpp — portable settings + proper Configure dialog
+// Matrix.cpp — portable settings + proper Configure window
 // - Saves to matrix-settings-portable.cfg (exe folder if writable, else %APPDATA%\Matrix\)
 // - Shows the settings path in the Configure window.
 
@@ -124,7 +124,7 @@ static void GetConfigPath(TCHAR* outPath, size_t cchOut) {
     // 2) Fallback: %APPDATA%\Matrix\matrix-settings-portable.cfg
     TCHAR appdata[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata))) {
-        // ✅ declare folder buffer here (fixes 'folder: undeclared identifier')
+        // declare folder buffer here (fixes 'folder: undeclared identifier')
         TCHAR folder[MAX_PATH];
         lstrcpyn(folder, appdata, MAX_PATH);
         size_t len = lstrlen(folder);
@@ -351,7 +351,6 @@ int Normal(int iCmdShow)
     ShowWindow(hwnd, iCmdShow);
     UpdateWindow(hwnd);
 
-    MSG msg;
     while (GetMessage(&msg, NULL,0,0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
@@ -418,7 +417,7 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE, PSTR szCmdLine, int iCmdShow
         case 's': return ScreenSave();              // screen saver
         case 'p': return 0;                         // preview (shell-hosted)
         case 'a': return ChangePassword(hwndParent);
-        case 'c': return Configure(hwndParent);     // proper config dialog
+        case 'c': return Configure(hwndParent);     // configuration
         default:  return Normal(iCmdShow);
     }
 }
@@ -548,7 +547,7 @@ LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hwnd, iMsg, wParam, lParam);
 }
 
-// ===================== Configure dialog (no .rc; shows path) =====================
+// ===================== Configure window (custom; shows path) =====================
 
 #define IDC_DENSITY     2001
 #define IDC_MSPEED      2002
@@ -636,7 +635,8 @@ static void CreateConfigChildren(HWND hDlg)
         WS_CHILD|WS_VISIBLE, w-92, rc.bottom-36, 80, 24, hDlg, (HMENU)IDCANCEL, hInst, 0);
 }
 
-static INT_PTR CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
+// 🔧 FIX: use a normal window proc signature (matches WNDPROC)
+static LRESULT CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
@@ -672,7 +672,7 @@ static INT_PTR CALLBACK CfgDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 int Configure(HWND hwndParent)
 {
     WNDCLASS wc{};
-    wc.lpfnWndProc   = CfgDlgProc;
+    wc.lpfnWndProc   = CfgDlgProc;  // now matches WNDPROC
     wc.hInstance     = hInst;
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_3DFACE+1);
