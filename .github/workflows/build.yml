@@ -1,6 +1,7 @@
 name: Build Matrix (EXE + SCR)
 
 on:
+  workflow_dispatch:   # 👈 adds manual trigger
   push:
     branches: [ main ]
   pull_request:
