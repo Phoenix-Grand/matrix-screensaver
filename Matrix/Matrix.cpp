@@ -1,9 +1,9 @@
-// matrix.cpp — portable settings + proper Configure dialog
+// Matrix.cpp — portable settings + proper Configure dialog
 // - Saves to matrix-settings-portable.cfg (exe folder if writable, else %APPDATA%\Matrix\)
 // - Shows the settings path in the Configure window.
 
 #include <windows.h>
-#include <commctrl.h>   // trackbars, buttons, etc.
+#include <commctrl.h>   // trackbars, buttons
 #include <tchar.h>
 #include <stdio.h>
 #include <shlobj.h>     // SHGetFolderPath, SHCreateDirectoryEx
@@ -124,14 +124,16 @@ static void GetConfigPath(TCHAR* outPath, size_t cchOut) {
     // 2) Fallback: %APPDATA%\Matrix\matrix-settings-portable.cfg
     TCHAR appdata[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appdata))) {
-        // Build %APPDATA%\Matrix\
+        // ✅ declare folder buffer here (fixes 'folder: undeclared identifier')
         TCHAR folder[MAX_PATH];
         lstrcpyn(folder, appdata, MAX_PATH);
         size_t len = lstrlen(folder);
         if (len > 0 && folder[len-1] != TEXT('\\')) {
             if (len + 1 < MAX_PATH) { folder[len] = TEXT('\\'); folder[len+1] = 0; len++; }
         }
-        if (len + 7 < MAX_PATH) lstrcat(folder, TEXT("Matrix"));
+        if (len + 7 < MAX_PATH) {
+            lstrcat(folder, TEXT("Matrix"));
+        }
         EnsureDirExists(folder);
 
         // Full file path
@@ -621,7 +623,7 @@ static void CreateConfigChildren(HWND hDlg)
         WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL, xR, y, w - xR - 12, 22, hDlg, (HMENU)IDC_FONTNAME, hInst, 0);
     y += 30;
 
-    // Config file path label (multi-line-friendly STATIC)
+    // Config file path label
     CreateWindowEx(0, WC_STATIC, _T("Config file:"),
         WS_CHILD|WS_VISIBLE, xL, rc.bottom - 60, 100, 18, hDlg, 0, hInst, 0);
     CreateWindowEx(WS_EX_CLIENTEDGE, WC_STATIC, gCfgPath,
