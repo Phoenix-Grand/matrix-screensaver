@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <shlobj.h>     // SHGetFolderPath, SHCreateDirectoryEx
 #include <shellapi.h>   // CommandLineToArgvW
+#include <cwctype>      // iswdigit
 #include "resource/resource.h"
 #include "palette.h"
 #include "message.h"
@@ -56,6 +57,10 @@ static void LoadSettingsPortable(void);
 static void SaveSettingsPortable(void);
 static LRESULT CALLBACK CfgWndProc(HWND, UINT, WPARAM, LPARAM);
 int  ConfigurePortable(HWND hwndParent);
+
+// Forward declarations needed by _tWinMain
+int Normal(int iCmdShow);
+int ScreenSave(void);
 
 LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
 BOOL ChangePassword(HWND hwnd);
@@ -113,6 +118,7 @@ static void GetConfigPath(TCHAR* outPath, size_t cchOut) {
     TCHAR exePath[MAX_PATH];
     DWORD n = GetModuleFileName(NULL, exePath, (DWORD)MAX_PATH);
     if (n && n < MAX_PATH) {
+        // Trim to folder
         TCHAR* lastSlash = _tcsrchr(exePath, TEXT('\\'));
         if (lastSlash) {
             *(lastSlash + 1) = 0; // keep trailing backslash
@@ -522,7 +528,6 @@ LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 #define IDC_FONTNAME    2006
 #define IDC_CFGPATH     2007
 
-static void ClampSettings();
 static void ReadControlsIntoGlobals(HWND h)
 {
     Density           = (int)SendDlgItemMessage(h, IDC_DENSITY,  TBM_GETPOS, 0, 0);
@@ -664,5 +669,69 @@ int ConfigurePortable(HWND hwndParent)
     }
 
     UnregisterClass(wc.lpszClassName, hInst);
+    return 0;
+}
+
+// ===================== Normal / ScreenSave =====================
+
+int Normal(int iCmdShow)
+{
+    HWND hwnd;
+    MSG  msg;
+    WNDCLASSEX  wndclass;
+    DWORD exStyle, style;
+    HCURSOR hcurs;
+
+    if (iCmdShow == SW_MAXIMIZE) {
+        exStyle = WS_EX_TOPMOST;
+        style   = WS_POPUP | WS_VISIBLE;
+        hcurs   = LoadCursor(hInst, MAKEINTRESOURCE(IDC_BLANKCURSOR));
+    } else {
+        exStyle = WS_EX_CLIENTEDGE;
+        style   = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+        hcurs   = LoadCursor(NULL, IDC_ARROW);
+    }
+
+    wndclass.cbSize        = sizeof(wndclass);
+    wndclass.style         = 0;
+    wndclass.lpfnWndProc   = WndProc;
+    wndclass.cbClsExtra    = 0;
+    wndclass.cbWndExtra    = 0;
+    wndclass.hInstance     = hInst;
+    wndclass.hIcon         = LoadIcon(NULL, IDI_APPLICATION);
+    wndclass.hCursor       = hcurs;
+    wndclass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wndclass.lpszMenuName  = 0;
+    wndclass.lpszClassName = szAppName;
+    wndclass.hIconSm       = LoadIcon(NULL, IDI_APPLICATION);
+
+    RegisterClassEx(&wndclass);
+
+    InitMessage();
+
+    hwnd = CreateWindowEx(exStyle, szAppName, szAppName, style,
+                          CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                          NULL, NULL, hInst, NULL);
+
+    ShowWindow(hwnd, iCmdShow);
+    UpdateWindow(hwnd);
+
+    while (GetMessage(&msg, NULL,0,0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    DeInitMessage();
+    return (int)msg.wParam;
+}
+
+int ScreenSave(void)
+{
+    UINT nPreviousState;
+    fScreenSaving = true;
+
+    SystemParametersInfo(SPI_SETSCREENSAVERRUNNING, TRUE,  &nPreviousState, 0);
+    Normal(SW_MAXIMIZE);
+    SystemParametersInfo(SPI_SETSCREENSAVERRUNNING, FALSE, &nPreviousState, 0);
     return 0;
 }
