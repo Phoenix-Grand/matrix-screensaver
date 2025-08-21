@@ -1,14 +1,16 @@
-// Matrix.cpp — portable settings with non-colliding symbol names
-// - Saves to matrix-settings-portable.cfg (exe folder if writable, else %APPDATA%\Matrix\)
-// - Configure window implemented as a normal window (no .rc), shows config path
-// - Portable functions renamed to avoid conflicts:
-//     LoadSettingsPortable / SaveSettingsPortable / ConfigurePortable
+// Matrix.cpp — portable settings + robust Configure handling (Unicode-safe)
+//
+// - Saves settings to matrix-settings-portable.cfg (exe folder if writable, else %APPDATA%\Matrix\)
+// - Properly handles /c, /c:HWND, /c HWND, /p, /s, /a using CommandLineToArgvW
+// - Uses _tWinMain so entrypoint matches UNICODE builds
+// - Portable functions renamed to avoid symbol conflicts with original sources
 
 #include <windows.h>
 #include <commctrl.h>
 #include <tchar.h>
 #include <stdio.h>
 #include <shlobj.h>     // SHGetFolderPath, SHCreateDirectoryEx
+#include <shellapi.h>   // CommandLineToArgvW
 #include "resource/resource.h"
 #include "palette.h"
 #include "message.h"
@@ -49,15 +51,13 @@ BOOL FontBold          = TRUE;
 BOOL RandomizeMessages = FALSE;
 TCHAR szFontName[512]  = _T("MS Sans Serif");
 
-// NOTE: DO NOT declare LoadSettings() here; Settings.cpp provides it.
-// We provide our own portable versions with different names.
+// Portable versions (renamed to avoid collisions with original project files)
 static void LoadSettingsPortable(void);
 static void SaveSettingsPortable(void);
 static LRESULT CALLBACK CfgWndProc(HWND, UINT, WPARAM, LPARAM);
 int  ConfigurePortable(HWND hwndParent);
 
 LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
-
 BOOL ChangePassword(HWND hwnd);
 BOOL VerifyPassword(HWND hwnd);
 
@@ -113,7 +113,6 @@ static void GetConfigPath(TCHAR* outPath, size_t cchOut) {
     TCHAR exePath[MAX_PATH];
     DWORD n = GetModuleFileName(NULL, exePath, (DWORD)MAX_PATH);
     if (n && n < MAX_PATH) {
-        // Trim to folder
         TCHAR* lastSlash = _tcsrchr(exePath, TEXT('\\'));
         if (lastSlash) {
             *(lastSlash + 1) = 0; // keep trailing backslash
@@ -311,97 +310,57 @@ void InitMatrix(HWND hwnd)
 
 // ===================== Normal app / saver plumbing =====================
 
-int Normal(int iCmdShow)
-{
-    HWND hwnd;
-    MSG  msg;
-    WNDCLASSEX  wndclass;
-    DWORD exStyle, style;
-    HCURSOR hcurs;
+// Robust, Unicode-safe screensaver args
+struct SsArgs {
+    TCHAR opt;     // 'c','p','s','a', or 0
+    HWND  parent;  // optional handle for /c:#### or /p ####
+};
 
-    if (iCmdShow == SW_MAXIMIZE) {
-        exStyle = WS_EX_TOPMOST;
-        style   = WS_POPUP | WS_VISIBLE;
-        hcurs   = LoadCursor(hInst, MAKEINTRESOURCE(IDC_BLANKCURSOR));
-    } else {
-        exStyle = WS_EX_CLIENTEDGE;
-        style   = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
-        hcurs   = LoadCursor(NULL, IDC_ARROW);
+static void ParseScreensaverArgs(SsArgs* out) {
+    out->opt = 0;
+    out->parent = NULL;
+
+    LPWSTR cmd = GetCommandLineW();
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(cmd, &argc);
+    if (!argv) return;
+
+    for (int i = 1; i < argc; ++i) {
+        LPCWSTR s = argv[i];
+        if (!s || !*s) continue;
+
+        if (s[0] == L'/' || s[0] == L'-') {
+            WCHAR c = s[1];
+            if (c >= L'A' && c <= L'Z') c = (WCHAR)(c + (L'a' - L'A'));
+
+            if (c == L'c' || c == L'p' || c == L's' || c == L'a') {
+                out->opt = (TCHAR)c;
+
+                // Optional HWND: /c:#### or /c ####
+                LPCWSTR p = s + 2;
+                if (*p == L':' || *p == L'=') {
+                    ++p;
+                    if (*p) out->parent = (HWND)(ULONG_PTR)wcstoul(p, NULL, 10);
+                } else if (i + 1 < argc) {
+                    LPCWSTR n = argv[i + 1];
+                    if (n && iswdigit(n[0])) {
+                        out->parent = (HWND)(ULONG_PTR)wcstoul(n, NULL, 10);
+                        ++i;
+                    }
+                }
+                break; // first recognized switch wins
+            }
+        }
     }
 
-    wndclass.cbSize        = sizeof(wndclass);
-    wndclass.style         = 0;
-    wndclass.lpfnWndProc   = WndProc;
-    wndclass.cbClsExtra    = 0;
-    wndclass.cbWndExtra    = 0;
-    wndclass.hInstance     = hInst;
-    wndclass.hIcon         = LoadIcon(NULL, IDI_APPLICATION);
-    wndclass.hCursor       = hcurs;
-    wndclass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wndclass.lpszMenuName  = 0;
-    wndclass.lpszClassName = szAppName;
-    wndclass.hIconSm       = LoadIcon(NULL, IDI_APPLICATION);
-
-    RegisterClassEx(&wndclass);
-
-    InitMessage();
-
-    hwnd = CreateWindowEx(exStyle, szAppName, szAppName, style,
-                          CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-                          NULL, NULL, hInst, NULL);
-
-    ShowWindow(hwnd, iCmdShow);
-    UpdateWindow(hwnd);
-
-    while (GetMessage(&msg, NULL,0,0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-
-    DeInitMessage();
-    return (int)msg.wParam;
+    LocalFree(argv);
 }
 
-int ScreenSave(void)
+int APIENTRY _tWinMain(HINSTANCE hInstance, HINSTANCE, LPTSTR /*lpCmdLine*/, int iCmdShow)
 {
-    UINT nPreviousState;
-    fScreenSaving = true;
-
-    SystemParametersInfo(SPI_SETSCREENSAVERRUNNING, TRUE,  &nPreviousState, 0);
-    Normal(SW_MAXIMIZE);
-    SystemParametersInfo(SPI_SETSCREENSAVERRUNNING, FALSE, &nPreviousState, 0);
-    return 0;
-}
-
-BOOL GetCommandLineOption(PSTR szCmdLine, int *chOption, HWND *hwndParent)
-{
-    int ch = *szCmdLine++;
-    if (ch == '-' || ch == '/') ch = *szCmdLine++;
-    if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
-
-    *chOption = ch;
-    ch = *szCmdLine++;
-
-    if (ch == ':') ch = *szCmdLine++;
-    while (ch == ' ' || ch == '\t') ch = *szCmdLine++;
-
-    if (isdigit(ch)) {
-        unsigned int i = (unsigned int)atoi(szCmdLine-1);
-        *hwndParent = (HWND)(UINT_PTR)i;
-    } else {
-        *hwndParent = NULL;
-    }
-    return TRUE;
-}
-
-int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE, PSTR szCmdLine, int iCmdShow)
-{
-    int  chOption;
-    HWND hwndParent;
-
     hInst = hInstance;
-    (void)GetCommandLine();
 
+    // Single-instance guard
     if (FindWindowEx(NULL, NULL, szAppName, szAppName)) return 0;
 
     SetRect(&ScreenSize, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
@@ -410,23 +369,26 @@ int WINAPI WinMain (HINSTANCE hInstance, HINSTANCE, PSTR szCmdLine, int iCmdShow
     maxcols = ScreenSize.right / xChar;
     maxrows = ScreenSize.bottom / yChar + 1;
 
-    // Use our portable loader here; avoids symbol collision with Settings.cpp's LoadSettings()
+    // Portable settings loader
     LoadSettingsPortable();
 
-    GetCommandLineOption(szCmdLine, &chOption, &hwndParent);
+    // Parse /s /p /c /a (robust & Unicode-safe)
+    SsArgs a{}; ParseScreensaverArgs(&a);
 
-    switch (chOption)
+    switch (a.opt)
     {
-        case 's': return ScreenSave();              // screen saver
-        case 'p': return 0;                         // preview (shell-hosted)
-        case 'a': return ChangePassword(hwndParent);
-        case 'c': return ConfigurePortable(hwndParent); // use portable config
-        default:  return Normal(iCmdShow);
+        case TEXT('s'): return ScreenSave();                      // run screensaver full-screen
+        case TEXT('p'): return 0;                                 // shell hosts preview; nothing to do
+        case TEXT('a'): return ChangePassword(a.parent);          // (legacy)
+        case TEXT('c'): return ConfigurePortable(a.parent);       // show our config window
+        default:       return Normal(iCmdShow);                   // run as normal app
     }
 }
 
 //-----------------------------------------------------------------------------
 int main(void) {}
+
+// ===================== Window procs & Configure UI =====================
 
 LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -460,7 +422,7 @@ LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
         ReleaseDC(hwnd, hdc);
 
         InitMatrix(hwnd);
-        i = QueryPerformanceFrequency(&freq);
+        QueryPerformanceFrequency(&freq);
 
         if (fScreenSaving) SetCursor(NULL);
         return 0;
@@ -550,7 +512,7 @@ LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hwnd, iMsg, wParam, lParam);
 }
 
-// ===================== Configure window (custom; shows path) =====================
+// --------------------- Configure window (custom; shows path) ---------------------
 
 #define IDC_DENSITY     2001
 #define IDC_MSPEED      2002
@@ -560,6 +522,7 @@ LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 #define IDC_FONTNAME    2006
 #define IDC_CFGPATH     2007
 
+static void ClampSettings();
 static void ReadControlsIntoGlobals(HWND h)
 {
     Density           = (int)SendDlgItemMessage(h, IDC_DENSITY,  TBM_GETPOS, 0, 0);
@@ -585,8 +548,7 @@ static void WriteGlobalsIntoControls(HWND h)
     CheckDlgButton(h, IDC_RANDOMMSG,  RandomizeMessages ? BST_CHECKED : BST_UNCHECKED);
 
     SetDlgItemText(h, IDC_FONTNAME, szFontName);
-
-    SetDlgItemText(h, IDC_CFGPATH, gCfgPath);
+    SetDlgItemText(h, IDC_CFGPATH,  gCfgPath);
 }
 
 static void CreateConfigChildren(HWND hDlg)
@@ -635,7 +597,6 @@ static void CreateConfigChildren(HWND hDlg)
         WS_CHILD|WS_VISIBLE, w-92, rc.bottom-36, 80, 24, hDlg, (HMENU)IDCANCEL, hInst, 0);
 }
 
-// Normal window proc for the Configure window
 static LRESULT CALLBACK CfgWndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
