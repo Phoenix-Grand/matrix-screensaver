@@ -1,7 +1,7 @@
 name: Build Matrix (EXE + SCR)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:     # manual Run workflow button
   push:
     branches: [ main ]
   pull_request:
@@ -14,25 +14,23 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        config: [Release]
-        platform: [Win32]   # ← VS projects usually use Win32, not x86
+    env:
+      CONFIG: Release
+      PLATFORM: Win32     # this solution is Win32; x64 often isn’t defined
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Puts cl/rc/link on PATH (x86 toolset is fine for Win32 builds)
       - name: MSVC dev cmd
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x86
+          arch: x86        # matches Win32 platform
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # Optional: write version.h from tag vMAJ.MIN.PAT when building a release
+      # Optional: generate version.h from tag (vMAJ.MIN.PAT)
       - name: Generate version.h (from tag)
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -49,42 +47,73 @@ jobs:
           EOF
             echo "Wrote Matrix/resource/version.h"
           else
-            echo "Tag not in vX.Y.Z form; skipping version header."
+            echo "Tag not in vX.Y.Z; skipping version header."
           fi
 
-      - name: Build solution
+      # Try MSBuild first – and always produce a binlog
+      - name: Build with MSBuild
+        shell: pwsh
+        continue-on-error: true
         run: |
-          msbuild Matrix.sln /m /p:Configuration=${{ matrix.config }} /p:Platform=${{ matrix.platform }}
+          msbuild Matrix.sln /m `
+            /p:Configuration=${{ env.CONFIG }} `
+            /p:Platform=${{ env.PLATFORM }} `
+            /bl:msbuild.binlog
+          echo "MSBUILD_EXIT=$LASTEXITCODE" >> $env:GITHUB_ENV
 
-      - name: Collect outputs (find EXE)
+      - name: Upload msbuild.binlog
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msbuild.binlog
+          path: msbuild.binlog
+          if-no-files-found: ignore
+
+      # If MSBuild didn’t produce an EXE, fall back to a manual cl/rc build.
+      - name: Fallback build with cl/rc
+        if: always()
         shell: pwsh
         run: |
-          # Search common output folders for newest EXE
-          $candidates = @(
-            "Matrix\${{ matrix.platform }}\${{ matrix.config }}\*.exe",
-            "Matrix\${{ matrix.config }}\*.exe",
-            "Matrix\bin\${{ matrix.platform }}\${{ matrix.config }}\*.exe",
-            "bin\${{ matrix.platform }}\${{ matrix.config }}\*.exe",
-            "**\${{ matrix.config }}\*.exe"
-          )
-          $exe = $null
-          foreach ($pat in $candidates) {
-            $found = Get-ChildItem -Path $pat -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($found) { $exe = $found.FullName; break }
+          # See if MSBuild already produced an .exe
+          $exe = Get-ChildItem -Recurse -Filter *.exe -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($exe) {
+            Write-Host "MSBuild produced: $($exe.FullName) – skipping fallback."
+            echo "OUT_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+            exit 0
           }
-          if (-not $exe) {
+
+          Write-Host "No EXE found; running fallback cl/rc compile..."
+
+          # Compile resources -> .res
+          rc /nologo /fo Matrix\resource\resource.res Matrix\resource\resource.rc
+
+          # Build the screensaver (uses your updated portable settings code in Matrix/matrix.cpp)
+          # Add libs used by the project
+          cl /nologo /O2 /W3 /DUNICODE /D_UNICODE `
+             /I Matrix\resource `
+             Matrix\matrix.cpp Matrix\resource\resource.res `
+             user32.lib gdi32.lib comctl32.lib shell32.lib `
+             /link /SUBSYSTEM:WINDOWS /OUT:matrix-fallback.exe
+
+          if (!(Test-Path matrix-fallback.exe)) { throw "Fallback build failed" }
+          echo "OUT_EXE=$((Resolve-Path matrix-fallback.exe).Path)" >> $env:GITHUB_ENV
+
+      - name: Package outputs
+        shell: pwsh
+        run: |
+          if (-not $env:OUT_EXE) {
+            # If MSBuild succeeded, OUT_EXE might still be empty; find newest exe
             $found = Get-ChildItem -Recurse -Filter *.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($found) { $exe = $found.FullName }
+            if ($found) { $env:OUT_EXE = $found.FullName }
           }
-          if (-not $exe) { throw "Could not locate built .exe. Check project output paths." }
+          if (-not $env:OUT_EXE) { throw "Could not locate built .exe" }
 
-          Write-Host "Found EXE: $exe"
-
+          Write-Host "Using EXE: $env:OUT_EXE"
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item $exe "out\matrix-win32.exe" -Force
-          Copy-Item $exe "out\matrix-win32.scr" -Force  # screensavers are EXEs with .scr
+          Copy-Item "$env:OUT_EXE" "out\matrix-win32.exe" -Force
+          Copy-Item "$env:OUT_EXE" "out\matrix-win32.scr" -Force   # .scr is just the exe renamed
 
-          $zip = "Matrix_${{ matrix.config }}_${{ matrix.platform }}.zip"
+          $zip = "Matrix_${{ env.CONFIG }}_${{ env.PLATFORM }}.zip"
           $toZip = @("out\matrix-win32.exe","out\matrix-win32.scr")
           if (Test-Path LICENSE)   { $toZip += "LICENSE" }
           if (Test-Path README.md) { $toZip += "README.md" }
