@@ -6,8 +6,7 @@
 #include "message.h"
 #include "matrix.h"
 
-// Existing globals from the project
-// Definitions (not just extern) so the linker can resolve them here
+// Definitions for globals (linker needs exactly one TU to define these)
 TCHAR szMessages[MAXMESSAGES][MAXMSGLEN];
 int nNumMessages = 0;
 
@@ -22,16 +21,16 @@ extern BOOL EnablePreviews;
 extern BOOL RandomizeMessages;
 
 // -------------------------------------------------------------------------------------------------
-// Portable settings: write/read to "matrix-settings-portable.cfg"
-// Prefer the executable directory if writable, otherwise %APPDATA%\\Matrix\\
-// Uses the Win32 INI helpers GetPrivateProfileString/WritePrivateProfileString for simplicity.
+// Portable settings: write/read to "matrix-settings-portable.cfg".
+// Prefer the executable directory if writable, otherwise use %APPDATA%\Matrix (no trailing backslash).
+// Uses GetPrivateProfileString / WritePrivateProfileString to store values.
 // -------------------------------------------------------------------------------------------------
 
 static TCHAR g_cfgPath[MAX_PATH] = {0};
 
 static BOOL DirIsWritable(LPCTSTR dir)
 {
-    // Try to create/open the target file for write (in temp name) to test writability.
+    // Try to create a tiny temp file in the target directory to verify write access.
     TCHAR testPath[MAX_PATH];
     lstrcpyn(testPath, dir, MAX_PATH);
     size_t len = lstrlen(testPath);
@@ -51,18 +50,18 @@ static BOOL DirIsWritable(LPCTSTR dir)
 
 static void EnsureDirExists(LPCTSTR dir)
 {
-    CreateDirectory(dir, NULL); // no harm if it already exists
+    CreateDirectory(dir, NULL); // no-op if already exists
 }
 
 static void ComputeConfigPath()
 {
     if (g_cfgPath[0] != 0) return;
 
-    // 1) Try executable folder
+    // 1) Try executable folder first.
     TCHAR exePath[MAX_PATH];
     GetModuleFileName(NULL, exePath, MAX_PATH);
 
-    // Remove filename to get directory
+    // Remove filename to get directory.
     TCHAR exeDir[MAX_PATH];
     lstrcpyn(exeDir, exePath, MAX_PATH);
     for (int i = lstrlen(exeDir) - 1; i >= 0; --i) {
@@ -78,7 +77,7 @@ static void ComputeConfigPath()
         return;
     }
 
-    // 2) Fallback to %APPDATA%\\Matrix\\
+    // 2) Fallback to %APPDATA%\Matrix
     TCHAR appdata[MAX_PATH] = {0};
     DWORD got = GetEnvironmentVariable(TEXT("APPDATA"), appdata, MAX_PATH);
     if (got > 0 && got < MAX_PATH) {
@@ -98,7 +97,7 @@ static void ComputeConfigPath()
         return;
     }
 
-    // 3) As a last resort, drop next to the EXE even if not writable (writes will fail gracefully)
+    // 3) As a last resort, use the EXE directory path (writes may fail if not writable).
     lstrcpyn(g_cfgPath, exeDir, MAX_PATH);
     size_t len4 = lstrlen(g_cfgPath);
     if (len4 && g_cfgPath[len4-1] != TEXT('\\'))
@@ -106,7 +105,7 @@ static void ComputeConfigPath()
     lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
 }
 
-// Convenience wrappers
+// INI helpers
 static UINT INIGetInt(LPCTSTR section, LPCTSTR key, UINT defval)
 {
     ComputeConfigPath();
@@ -133,22 +132,21 @@ static void INISetString(LPCTSTR section, LPCTSTR key, LPCTSTR val)
     WritePrivateProfileString(section, key, val, g_cfgPath);
 }
 
-// -------------------------------------------------------------------------------------------------
-// Replacements for the original registry-based functions
-// -------------------------------------------------------------------------------------------------
-
+// Public API
 void LoadSettings()
 {
-    // Defaults (these should already be set elsewhere on first run, but be defensive)
+    // Integers
     MessageSpeed = INIGetInt(TEXT("Matrix"), TEXT("MessageSpeed"), MessageSpeed);
     MatrixSpeed  = INIGetInt(TEXT("Matrix"), TEXT("MatrixSpeed"),  MatrixSpeed);
     Density      = INIGetInt(TEXT("Matrix"), TEXT("Density"),      Density);
     FontSize     = INIGetInt(TEXT("Matrix"), TEXT("FontSize"),     FontSize);
 
-    EnablePreviews = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Previews"), EnablePreviews ? 1 : 0);
-    RandomizeMessages = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Randomize"), RandomizeMessages ? 1 : 0);
-    FontBold = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("FontBold"), FontBold ? 1 : 0);
+    // Booleans
+    EnablePreviews    = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Previews"),   EnablePreviews ? 1 : 0);
+    RandomizeMessages = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Randomize"),  RandomizeMessages ? 1 : 0);
+    FontBold          = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("FontBold"),   FontBold ? 1 : 0);
 
+    // Strings
     INIGetString(TEXT("Matrix"), TEXT("FontName"), szFontName, MAX_PATH, szFontName);
 
     // Messages
@@ -156,8 +154,7 @@ void LoadSettings()
     if (nNumMessages < 0) nNumMessages = 0;
     if (nNumMessages > MAXMESSAGES) nNumMessages = MAXMESSAGES;
 
-    for (int i = 0; i < nNumMessages; ++i)
-    {
+    for (int i = 0; i < nNumMessages; ++i) {
         TCHAR key[32];
         wsprintf(key, TEXT("Message%d"), i);
         INIGetString(TEXT("Messages"), key, szMessages[i], MAXMSGLEN, TEXT(""));
@@ -180,8 +177,7 @@ void SaveSettings()
 
     // Messages
     INISetInt(TEXT("Messages"), TEXT("Count"), (UINT)nNumMessages);
-    for (int i = 0; i < nNumMessages; ++i)
-    {
+    for (int i = 0; i < nNumMessages; ++i) {
         TCHAR key[32];
         wsprintf(key, TEXT("Message%d"), i);
         INISetString(TEXT("Messages"), key, szMessages[i]);
