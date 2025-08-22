@@ -28,21 +28,27 @@ extern BOOL EnablePreviews;
 extern BOOL RandomizeMessages;
 
 // ------------------------------------------------------------------------------------
-// Portable settings config path handling
-//   File name: matrix-settings-portable.cfg
-//   Location:  EXE folder if writable, else %APPDATA%\Matrix-ScreenSaver\
+// Helpers
 // ------------------------------------------------------------------------------------
 
-static TCHAR g_cfgPath[MAX_PATH] = {0};
+static void EnsureTrailingBackslash(TCHAR* path, size_t cch)
+{
+    size_t n = lstrlen(path);
+    if (n == 0) return;
+    TCHAR last = path[n - 1];
+    if (last != TEXT('\\') && last != TEXT('/'))
+    {
+        // ensure room for backslash + NUL
+        if (n + 2 < cch) lstrcat(path, TEXT("\\"));
+    }
+}
 
 static BOOL DirIsWritable(LPCTSTR dir)
 {
-    // Try to create/open a temp file to test writability.
+    // Try to create a temp file to test writability.
     TCHAR testPath[MAX_PATH];
     lstrcpyn(testPath, dir, MAX_PATH);
-    size_t len = lstrlen(testPath);
-    if (len && testPath[len-1] != TEXT('\\'))
-        lstrcat(testPath, TEXT("\\"));
+    EnsureTrailingBackslash(testPath, MAX_PATH);
     lstrcat(testPath, TEXT(".__matrix_write_test__.tmp"));
 
     HANDLE h = CreateFile(testPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
@@ -59,6 +65,14 @@ static void EnsureDirExists(LPCTSTR dir)
 {
     CreateDirectory(dir, NULL); // no-op if exists
 }
+
+// ------------------------------------------------------------------------------------
+// Portable settings config path handling
+//   File name: matrix-settings-portable.cfg
+//   Location:  EXE folder if writable, else %APPDATA%\Matrix-ScreenSaver\
+// ------------------------------------------------------------------------------------
+
+static TCHAR g_cfgPath[MAX_PATH] = {0};
 
 static void ComputeConfigPath()
 {
@@ -77,9 +91,7 @@ static void ComputeConfigPath()
 
     if (DirIsWritable(exeDir)) {
         lstrcpyn(g_cfgPath, exeDir, MAX_PATH);
-        size_t len = lstrlen(g_cfgPath);
-        if (len && g_cfgPath[len-1] != TEXT('\\'))
-            lstrcat(g_cfgPath, TEXT("\\"));
+        EnsureTrailingBackslash(g_cfgPath, MAX_PATH);
         lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
         return;
     }
@@ -90,29 +102,26 @@ static void ComputeConfigPath()
     if (got > 0 && got < MAX_PATH) {
         TCHAR matrixDir[MAX_PATH];
         lstrcpyn(matrixDir, appdata, MAX_PATH);
-        size_t len2 = lstrlen(matrixDir);
-        if (len2 && matrixDir[len2-1] != TEXT('\\'))
-            lstrcat(matrixDir, TEXT("\\"));
+        EnsureTrailingBackslash(matrixDir, MAX_PATH);
         lstrcat(matrixDir, TEXT("Matrix-ScreenSaver"));
         EnsureDirExists(matrixDir);
 
         lstrcpyn(g_cfgPath, matrixDir, MAX_PATH);
-        size_t len3 = lstrlen(g_cfgPath);
-        if (len3 && g_cfgPath[len3-1] != TEXT('\\'))
-            lstrcat(g_cfgPath, TEXT("\\"));
+        EnsureTrailingBackslash(g_cfgPath, MAX_PATH);
         lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
         return;
     }
 
     // 3) Last resort: next to the EXE even if not writable
     lstrcpyn(g_cfgPath, exeDir, MAX_PATH);
-    size_t len4 = lstrlen(g_cfgPath);
-    if (len4 && g_cfgPath[len-1] != TEXT('\\'))
-        lstrcat(g_cfgPath, TEXT("\\"));
+    EnsureTrailingBackslash(g_cfgPath, MAX_PATH);
     lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
 }
 
 // ------------------------------------------------------------------------------------
+// Minimal INI helpers (read via Win32, write via custom comment-preserving routine)
+// ------------------------------------------------------------------------------------
+
 static UINT INIGetInt(LPCTSTR section, LPCTSTR key, UINT defval)
 {
     ComputeConfigPath();
@@ -135,16 +144,16 @@ static BOOL WriteWholeTextFile(LPCTSTR path, const TCHAR* text)
     WORD bom = 0xFEFF;
     DWORD wrote = 0;
     WriteFile(h, &bom, sizeof(bom), &wrote, NULL);
-    size_t len = lstrlen(text);
-    WriteFile(h, text, (DWORD)(len * sizeof(TCHAR)), &wrote, NULL);
+    size_t n = lstrlen(text);
+    WriteFile(h, text, (DWORD)(n * sizeof(TCHAR)), &wrote, NULL);
     CloseHandle(h);
     return TRUE;
 #else
     HANDLE h = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     DWORD wrote = 0;
-    size_t len = lstrlen(text);
-    WriteFile(h, text, (DWORD)len, &wrote, NULL);
+    size_t n = lstrlen(text);
+    WriteFile(h, text, (DWORD)n, &wrote, NULL);
     CloseHandle(h);
     return TRUE;
 #endif
@@ -197,6 +206,7 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
     TCHAR secHdr[128];
     wsprintf(secHdr, TEXT("[%s]"), section);
 
+    // Find section start (content begins after its header line)
     LPTSTR p = text;
     LPTSTR secStart = NULL;
     while (*p) {
@@ -215,6 +225,7 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
         }
     }
 
+    // If section not found, append it at end
     if (!secStart) {
         size_t curLen = lstrlen(text);
         size_t addLen = lstrlen(secHdr) + lstrlen(TEXT("\r\n\r\n")) + 1;
@@ -226,6 +237,7 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
         secStart = text + lstrlen(text);
     }
 
+    // Determine section end (next header or EOF)
     LPTSTR q = secStart;
     LPTSTR sectionEnd = q;
     while (*q) {
@@ -242,9 +254,11 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
     }
     if (!*q) sectionEnd = q;
 
+    // Build "key=" matcher
     TCHAR keyEq[256];
     wsprintf(keyEq, TEXT("%s="), key);
 
+    // Search key between secStart and sectionEnd
     LPTSTR pos = secStart;
     while (pos < sectionEnd) {
         LPTSTR line = pos;
@@ -255,8 +269,9 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
 
         LPTSTR t = line;
         while (*t == TEXT(' ') || *t == TEXT('\t')) t++;
-        if (*t == TEXT(';') || *t == 0) continue;
+        if (*t == TEXT(';') || *t == 0) continue; // comment/blank
         if (_tcsnicmp(t, keyEq, lstrlen(keyEq)) == 0) {
+            // replace this line with key=value
             TCHAR newLine[1024];
             wsprintf(newLine, TEXT("%s=%s"), key, value);
             size_t newLen = lstrlen(newLine);
@@ -271,17 +286,20 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
         }
     }
 
-    TCHAR newLine[1024];
-    wsprintf(newLine, TEXT("%s=%s\r\n"), key, value);
-    size_t insLen = lstrlen(newLine);
-    size_t headLen = (size_t)(sectionEnd - text);
-    size_t curTotal = lstrlen(text);
+    // Key not found; insert before sectionEnd
+    {
+        TCHAR newLine[1024];
+        wsprintf(newLine, TEXT("%s=%s\r\n"), key, value);
+        size_t insLen = lstrlen(newLine);
+        size_t headLen = (size_t)(sectionEnd - text);
+        size_t curTotal = lstrlen(text);
 
-    if (curTotal + insLen + 1 >= cchText) return FALSE;
+        if (curTotal + insLen + 1 >= cchText) return FALSE;
 
-    memmove(sectionEnd + insLen, sectionEnd, (curTotal - headLen + 1) * sizeof(TCHAR));
-    memcpy(sectionEnd, newLine, insLen * sizeof(TCHAR));
-    return TRUE;
+        memmove(sectionEnd + insLen, sectionEnd, (curTotal - headLen + 1) * sizeof(TCHAR));
+        memcpy(sectionEnd, newLine, insLen * sizeof(TCHAR));
+        return TRUE;
+    }
 }
 
 static BOOL INISetString_Preserve(LPCTSTR section, LPCTSTR key, LPCTSTR val)
