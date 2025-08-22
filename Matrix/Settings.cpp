@@ -434,3 +434,4 @@ void SaveSettings()
         INISetString_Preserve(TEXT("Messages"), key, szMessages[i]);
     }
 }
+
