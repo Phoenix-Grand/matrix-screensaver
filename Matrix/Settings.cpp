@@ -22,7 +22,7 @@ extern TCHAR szMessages[MAXMESSAGES][MAXMSGLEN];
 
 // -------------------------------------------------------------------------------------------------
 // Portable settings: write/read to "matrix-settings-portable.cfg"
-// Prefer the executable directory if writable, otherwise %APPDATA%\Matrix\
+// Prefer the executable directory if writable, otherwise %APPDATA%\\Matrix (no trailing backslash).
 // Uses the Win32 INI helpers GetPrivateProfileString/WritePrivateProfileString for simplicity.
 // -------------------------------------------------------------------------------------------------
 
@@ -30,7 +30,7 @@ static TCHAR g_cfgPath[MAX_PATH] = {0};
 
 static BOOL DirIsWritable(LPCTSTR dir)
 {
-    // Try to create/open the target file for write (in temp name) to test writability.
+    // Try to create/open a temp file to test writability.
     TCHAR testPath[MAX_PATH];
     lstrcpyn(testPath, dir, MAX_PATH);
     size_t len = lstrlen(testPath);
@@ -50,7 +50,7 @@ static BOOL DirIsWritable(LPCTSTR dir)
 
 static void EnsureDirExists(LPCTSTR dir)
 {
-    CreateDirectory(dir, NULL); // no harm if it already exists
+    CreateDirectory(dir, NULL); // ok if it already exists
 }
 
 static void ComputeConfigPath()
@@ -77,7 +77,7 @@ static void ComputeConfigPath()
         return;
     }
 
-    // 2) Fallback to %APPDATA%\Matrix\
+    // 2) Fallback to %APPDATA%\\Matrix
     TCHAR appdata[MAX_PATH] = {0};
     DWORD got = GetEnvironmentVariable(TEXT("APPDATA"), appdata, MAX_PATH);
     if (got > 0 && got < MAX_PATH) {
@@ -97,7 +97,7 @@ static void ComputeConfigPath()
         return;
     }
 
-    // 3) As a last resort, drop next to the EXE even if not writable (writes will fail gracefully)
+    // 3) Last resort: next to the EXE
     lstrcpyn(g_cfgPath, exeDir, MAX_PATH);
     size_t len4 = lstrlen(g_cfgPath);
     if (len4 && g_cfgPath[len4-1] != TEXT('\\'))
@@ -138,7 +138,7 @@ static void INISetString(LPCTSTR section, LPCTSTR key, LPCTSTR val)
 
 void LoadSettings()
 {
-    // Defaults (these should already be set elsewhere on first run, but be defensive)
+    // Keep current globals as defaults
     MessageSpeed = INIGetInt(TEXT("Matrix"), TEXT("MessageSpeed"), MessageSpeed);
     MatrixSpeed  = INIGetInt(TEXT("Matrix"), TEXT("MatrixSpeed"),  MatrixSpeed);
     Density      = INIGetInt(TEXT("Matrix"), TEXT("Density"),      Density);
