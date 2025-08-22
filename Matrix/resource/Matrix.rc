@@ -59,7 +59,7 @@ BEGIN
     LTEXT           "&Font Name:",IDC_STATIC,153,104,38,8
     CONTROL         "&Bold",IDC_BOLD,"Button",BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP,296,104,30,10
     CTEXT           "Matrix Screensaver",IDC_STATIC,138,147,76,8
-    CONTROL         "<a>github.com/strobejb/matrix</a>",IDC_SYSLINK1,"SysLink",LWS_RIGHT | WS_TABSTOP,247,146,86,14
+    CONTROL         "<a href=\"https://github.com/strobejb/matrix\">github.com/strobejb/matrix</a>",IDC_SYSLINK1,"SysLink",LWS_RIGHT | WS_TABSTOP,247,146,86,14
     CTEXT           "Matrix Screensaver",IDC_VERSION,138,158,76,11
 END
 
