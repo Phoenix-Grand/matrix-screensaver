@@ -1,3 +1,6 @@
+// Matrix/Settings.cpp  — portable settings via INI-style .cfg with comment preservation
+// Config file: matrix-settings-portable.cfg
+// Preferred location: EXE folder if writable; otherwise %APPDATA%\Matrix-ScreenSaver\
 
 #include <windows.h>
 #include <tchar.h>
@@ -25,7 +28,7 @@ extern BOOL RandomizeMessages;
 // ------------------------------------------------------------------------------------
 // Portable settings config path handling
 //   File name: matrix-settings-portable.cfg
-//   Location:  EXE folder if writable, else %APPDATA%\\Matrix\\
+//   Location:  EXE folder if writable, else %APPDATA%\Matrix-ScreenSaver\
 // ------------------------------------------------------------------------------------
 
 static TCHAR g_cfgPath[MAX_PATH] = {0};
@@ -79,7 +82,7 @@ static void ComputeConfigPath()
         return;
     }
 
-    // 2) Fallback to %APPDATA%\\Matrix
+    // 2) Fallback to %APPDATA%\Matrix-ScreenSaver
     TCHAR appdata[MAX_PATH] = {0};
     DWORD got = GetEnvironmentVariable(TEXT("APPDATA"), appdata, MAX_PATH);
     if (got > 0 && got < MAX_PATH) {
@@ -88,7 +91,7 @@ static void ComputeConfigPath()
         size_t len2 = lstrlen(matrixDir);
         if (len2 && matrixDir[len2-1] != TEXT('\\'))
             lstrcat(matrixDir, TEXT("\\"));
-        lstrcat(matrixDir, TEXT("Matrix"));
+        lstrcat(matrixDir, TEXT("Matrix-ScreenSaver"));
         EnsureDirExists(matrixDir);
 
         lstrcpyn(g_cfgPath, matrixDir, MAX_PATH);
@@ -131,7 +134,6 @@ static BOOL WriteWholeTextFile(LPCTSTR path, const TCHAR* text)
     // Write UTF-16LE with BOM
     HANDLE h = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
-    // UTF-16LE BOM
     WORD bom = 0xFEFF;
     DWORD wrote = 0;
     WriteFile(h, &bom, sizeof(bom), &wrote, NULL);
@@ -158,8 +160,7 @@ static BOOL ReadWholeTextFile(LPCTSTR path, LPTSTR buffer, DWORD cchBuffer, DWOR
     if (sizeBytes == INVALID_FILE_SIZE) { CloseHandle(h); return FALSE; }
 
 #ifdef UNICODE
-    // Expect UTF-16LE or ANSI; if ANSI, we will treat bytes as ANSI and convert
-    // For simplicity, assume UTF-16LE with BOM if present
+    // Expect UTF-16LE or ANSI; if ANSI, convert
     DWORD read = 0;
     BYTE* tmp = (BYTE*)LocalAlloc(LMEM_FIXED, sizeBytes + 2);
     if (!tmp) { CloseHandle(h); return FALSE; }
@@ -199,30 +200,23 @@ static BOOL ReadWholeTextFile(LPCTSTR path, LPTSTR buffer, DWORD cchBuffer, DWOR
 static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR section, LPCTSTR key, LPCTSTR value)
 {
     // Operate on CRLF, keep comments/blank lines. Append section if missing.
-    // Build markers
     TCHAR secHdr[128];
     wsprintf(secHdr, TEXT("[%s]"), section);
 
-    // Search for section
+    // Find section start (content begins after its header line)
     LPTSTR p = text;
     LPTSTR secStart = NULL;
     while (*p) {
-        // find line start
         LPTSTR line = p;
-        // move to end of line
         while (*p && *p != TEXT('\r') && *p != TEXT('\n')) p++;
-        // compute next
         LPTSTR next = p;
         if (*p == TEXT('\r')) { p++; if (*p == TEXT('\n')) p++; }
         else if (*p == TEXT('\n')) { p++; }
 
-        // compare line with [Section]
-        // trim spaces
         while (*line == TEXT(' ') || *line == TEXT('\t')) line++;
         if (line[0] == TEXT('[')) {
-            // get section token
             if (_tcsnicmp(line, secHdr, lstrlen(secHdr)) == 0) {
-                secStart = next; // content starts after header line
+                secStart = next;
                 break;
             }
         }
@@ -233,34 +227,29 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
         size_t curLen = lstrlen(text);
         size_t addLen = lstrlen(secHdr) + lstrlen(TEXT("\r\n\r\n")) + 1;
         if (curLen + addLen >= cchText) return FALSE;
-        lstrcat(text, TEXT("\r\n"));
+        if (curLen > 0 && text[curLen-1] != TEXT('\n')) lstrcat(text, TEXT("\r\n"));
         lstrcat(text, secHdr);
         lstrcat(text, TEXT("\r\n"));
         lstrcat(text, TEXT("\r\n"));
-        secStart = text + lstrlen(text); // now points after blank line
+        secStart = text + lstrlen(text);
     }
 
-    // Now search within section for key=
-    // We'll scan until next [Section] or end of file
-    LPTSTR scan = secStart;
-    LPTSTR sectionEnd = scan;
-    {
-        LPTSTR q = scan;
-        while (*q) {
-            LPTSTR line = q;
-            while (*q && *q != TEXT('\r') && *q != TEXT('\n')) q++;
-            LPTSTR next = q;
-            if (*q == TEXT('\r')) { q++; if (*q == TEXT('\n')) q++; }
-            else if (*q == TEXT('\n')) { q++; }
+    // Determine section end (next header or EOF)
+    LPTSTR q = secStart;
+    LPTSTR sectionEnd = q;
+    while (*q) {
+        LPTSTR line = q;
+        while (*q && *q != TEXT('\r') && *q != TEXT('\n')) q++;
+        LPTSTR next = q;
+        if (*q == TEXT('\r')) { q++; if (*q == TEXT('\n')) q++; }
+        else if (*q == TEXT('\n')) { q++; }
 
-            // Trim
-            LPTSTR t = line;
-            while (*t == TEXT(' ') || *t == TEXT('\t')) t++;
-            if (*t == TEXT('[')) { sectionEnd = line; break; } // next section header
-            if (!*q) { sectionEnd = q; break; }
-        }
-        if (!*q) sectionEnd = q;
+        LPTSTR t = line;
+        while (*t == TEXT(' ') || *t == TEXT('\t')) t++;
+        if (*t == TEXT('[')) { sectionEnd = line; break; }
+        if (!*q) { sectionEnd = q; break; }
     }
+    if (!*q) sectionEnd = q;
 
     // Build "key=" matcher
     TCHAR keyEq[256];
@@ -275,7 +264,6 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
         if (pos < sectionEnd && *pos == TEXT('\r')) { pos++; if (pos < sectionEnd && *pos == TEXT('\n')) pos++; }
         else if (pos < sectionEnd && *pos == TEXT('\n')) { pos++; }
 
-        // match key= ignoring leading spaces and comments
         LPTSTR t = line;
         while (*t == TEXT(' ') || *t == TEXT('\t')) t++;
         if (*t == TEXT(';') || *t == 0) continue; // comment/blank
@@ -289,9 +277,7 @@ static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR sec
 
             if (newLen + 2 + (line - text) + tailLen + 1 >= cchText) return FALSE;
 
-            // move tail to make room or close gap
             memmove(line + newLen, next, (tailLen + 1) * sizeof(TCHAR));
-            // write new
             memcpy(line, newLine, newLen * sizeof(TCHAR));
             return TRUE;
         }
@@ -348,8 +334,7 @@ static void EnsureTemplateCfgExists()
     DWORD attrs = GetFileAttributes(g_cfgPath);
     if (attrs != INVALID_FILE_ATTRIBUTES) return; // already exists
 
-    // Build directory if needed
-    // (Path already points to a file; strip to directory)
+    // Build directory if needed (strip filename to get directory)
     TCHAR pathCopy[MAX_PATH];
     lstrcpyn(pathCopy, g_cfgPath, MAX_PATH);
     for (int i = lstrlen(pathCopy) - 1; i >= 0; --i) {
@@ -359,36 +344,36 @@ static void EnsureTemplateCfgExists()
 
     // Template content (no trailing backslashes in comments)
     const TCHAR* tpl =
-        TEXT("; Matrix portable config\r\n")
-        TEXT("; Comments here will remain if keys are updated\r\n")
+        TEXT("; Matrix portable config") TEXT("\r\n")
+        TEXT("; Comments here will remain if keys are updated") TEXT("\r\n")
         TEXT("\r\n")
-        TEXT("[Matrix]\r\n")
-        TEXT("FontName=MS Sans Serif\r\n")
-        TEXT("FontBold=1\r\n")
-        TEXT("Randomize=0\r\n")
-        TEXT("Previews=1\r\n")
-        TEXT("FontSize=12\r\n")
-        TEXT("Density=32\r\n")
-        TEXT("MatrixSpeed=1\r\n")
-        TEXT("MessageSpeed=150\r\n")
+        TEXT("[Matrix]") TEXT("\r\n")
+        TEXT("FontName=MS Sans Serif") TEXT("\r\n")
+        TEXT("FontBold=1") TEXT("\r\n")
+        TEXT("Randomize=0") TEXT("\r\n")
+        TEXT("Previews=1") TEXT("\r\n")
+        TEXT("FontSize=12") TEXT("\r\n")
+        TEXT("Density=32") TEXT("\r\n")
+        TEXT("MatrixSpeed=1") TEXT("\r\n")
+        TEXT("MessageSpeed=150") TEXT("\r\n")
         TEXT("\r\n")
-        TEXT("[Messages]\r\n")
-        TEXT("Count=1\r\n")
-        TEXT("Message0=Hey, Fellow\r\n")
+        TEXT("[Messages]") TEXT("\r\n")
+        TEXT("Count=1") TEXT("\r\n")
+        TEXT("Message0=Hey, Fellow") TEXT("\r\n")
         TEXT("\r\n")
-        TEXT("; Additional notes and guidance\r\n")
-        TEXT("[Notes]\r\n")
-        TEXT("; nothing in this section is read/written\r\n")
-        TEXT("; \r\n")
-        TEXT("; FontName=MS Sans Serif\r\n")
-        TEXT("; FontBold=1  1/0 True/False\r\n")
-        TEXT("; Randomize=0  \"0\" displays your messages in saved order 0,1,2,... (not random)\r\n")
-        TEXT("; Previews=1\r\n")
-        TEXT("; FontSize=12\r\n")
-        TEXT("; Density=32\r\n")
-        TEXT("; MatrixSpeed=  overall animation speed (1..10)\r\n")
-        TEXT("; MessageSpeed= how fast messages burn in (50..500)\r\n")
-        TEXT("; \r\n");
+        TEXT("; Additional notes and guidance") TEXT("\r\n")
+        TEXT("[Notes]") TEXT("\r\n")
+        TEXT("; nothing in this section is read/written") TEXT("\r\n")
+        TEXT("; ") TEXT("\r\n")
+        TEXT("; FontName=MS Sans Serif") TEXT("\r\n")
+        TEXT("; FontBold=1  1/0 True/False") TEXT("\r\n")
+        TEXT("; Randomize=0  \"0\" displays your messages in saved order 0,1,2,... (not random)") TEXT("\r\n")
+        TEXT("; Previews=1") TEXT("\r\n")
+        TEXT("; FontSize=12") TEXT("\r\n")
+        TEXT("; Density=32") TEXT("\r\n")
+        TEXT("; MatrixSpeed=  overall animation speed (1..10)") TEXT("\r\n")
+        TEXT("; MessageSpeed= how fast messages burn in (50..500)") TEXT("\r\n")
+        TEXT("; ") TEXT("\r\n");
 
     WriteWholeTextFile(g_cfgPath, tpl);
 }
@@ -407,9 +392,9 @@ void LoadSettings()
     Density      = INIGetInt(TEXT("Matrix"), TEXT("Density"),      Density);
     FontSize     = INIGetInt(TEXT("Matrix"), TEXT("FontSize"),     FontSize);
 
-    EnablePreviews   = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Previews"),   EnablePreviews ? 1 : 0);
-    RandomizeMessages= (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Randomize"),  RandomizeMessages ? 1 : 0);
-    FontBold         = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("FontBold"),   FontBold ? 1 : 0);
+    EnablePreviews    = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Previews"),   EnablePreviews ? 1 : 0);
+    RandomizeMessages = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Randomize"),  RandomizeMessages ? 1 : 0);
+    FontBold          = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("FontBold"),   FontBold ? 1 : 0);
 
     INIGetString(TEXT("Matrix"), TEXT("FontName"), szFontName, MAX_PATH, szFontName);
 
