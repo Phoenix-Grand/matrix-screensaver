@@ -1,9 +1,6 @@
 #include <windows.h>
 #include <tchar.h>
 #include <commctrl.h>
-#include <shellapi.h>   // ShellExecute
-#pragma comment(lib, "Shell32.lib")
-
 #include "resource/resource.h"
 #include "message.h"
 #include "matrix.h"
@@ -177,26 +174,23 @@ INT_PTR CALLBACK configdlgproc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
         }
 
     case WM_HSCROLL:
+        /* if((HWND)lParam == GetDlgItem(hwnd, IDC_SLIDER3))
+        {
+            MatrixSpeed = SendDlgItemMessage(hwnd, IDC_SLIDER1, TBM_GETPOS, 0, 0); 
+            MessageSpeed = SendDlgItemMessage(hwnd, IDC_SLIDER3, TBM_GETPOS, 0, 0); 
+
+            char ach[80];
+            wsprintf(ach, "Message Speed Display (%ds)", MatrixSpeed * (MSGSPEED_MAX-MessageSpeed));
+            SetWindowText(GetDlgItem(hwnd, IDC_MSGSPEEDGRP), ach);
+        } */
+
         if((HWND)lParam == GetDlgItem(hwnd, IDC_SLIDER4))
         {
             if(EnablePreviews)
                 PostMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDC_PREV, BN_CLICKED), (LPARAM)GetDlgItem(hwnd,IDC_PREV));
         }
-        return 0;
 
-    case WM_NOTIFY:
-        // Handle SysLink click for IDC_SYSLINK1
-        if (((LPNMHDR)lParam)->idFrom == IDC_SYSLINK1)
-        {
-            if (((LPNMHDR)lParam)->code == NM_CLICK || ((LPNMHDR)lParam)->code == NM_RETURN)
-            {
-                PNMLINK pLink = (PNMLINK)lParam;
-                // Launch the URL from the link
-                ShellExecute(NULL, _T("open"), pLink->item.szUrl, NULL, NULL, SW_SHOWNORMAL);
-                return 0;
-            }
-        }
-        break;
+        return 0;
 
     case WM_COMMAND:
 
@@ -225,6 +219,7 @@ INT_PTR CALLBACK configdlgproc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
         case IDC_ENABLEPREV:
             EnablePreviews = IsDlgButtonChecked(hwnd, IDC_ENABLEPREV);
             EnableWindow(GetDlgItem(hwnd, IDC_PREV), !EnablePreviews);
+
             break;
 
         case IDC_BOLD:
@@ -299,6 +294,7 @@ INT_PTR CALLBACK configdlgproc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
             GetWindowText(hwndCombo, buf, 256);
             SendMessage(hwndCombo, CB_ADDSTRING, 0, (LPARAM)buf);
             PostMessage(hwnd, WM_COMMAND, MAKEWPARAM(IDC_PREV, BN_CLICKED), (LPARAM)GetDlgItem(hwnd,IDC_PREV));
+
             return 0;
 
         case IDC_REMOVE:
