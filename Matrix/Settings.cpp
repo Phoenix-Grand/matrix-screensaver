@@ -375,8 +375,9 @@ static void EnsureTemplateCfgExists()
         TEXT("; Density=32") TEXT("\r\n")
         TEXT("; MatrixSpeed=  animation speed (1 = slow, 10 = fast)") TEXT("\r\n")
         TEXT("; MessageSpeed= how fast messages burn in (50..500)") TEXT("\r\n")
-        TEXT("; ") TEXT("\r\n");
+        TEXT("; ") TEXT("\r\n")
         TEXT("; To reset to defaults, just delete this .cfg file and a new one will be generated when needed.") TEXT("\r\n")
+        TEXT("; ") TEXT("\r\n");
 
     WriteWholeTextFile(g_cfgPath, tpl);
 }
