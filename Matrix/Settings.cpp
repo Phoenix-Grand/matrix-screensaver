@@ -356,11 +356,11 @@ static void EnsureTemplateCfgExists()
         TEXT("Previews=1") TEXT("\r\n")
         TEXT("FontSize=12") TEXT("\r\n")
         TEXT("Density=32") TEXT("\r\n")
-        TEXT("MatrixSpeed=10") TEXT("\r\n") // intuitive default: 10 = fast
+        TEXT("MatrixSpeed=3") TEXT("\r\n") // intuitive default: 10 = fast
         TEXT("MessageSpeed=150") TEXT("\r\n")
         TEXT("\r\n")
         TEXT("[Messages]") TEXT("\r\n")
-        TEXT("Count=1") TEXT("\r\n")
+        TEXT("Count=0") TEXT("\r\n")
         TEXT("Message0=Hey, Fellow") TEXT("\r\n")
         TEXT("\r\n")
         TEXT("; Additional notes and guidance") TEXT("\r\n")
