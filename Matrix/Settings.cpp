@@ -1,437 +1,185 @@
-// Matrix/Settings.cpp  — portable settings via INI-style .cfg with comment preservation
-// Config file: matrix-settings-portable.cfg
-// Preferred location: EXE folder if writable; otherwise %APPDATA%\Matrix-ScreenSaver\
+// Settings.cpp - Portable configuration for Matrix ScreenSaver
+// Stores settings in matrix-settings-portable.cfg
+// Location: EXE folder if writable, else %APPDATA%\Matrix-ScreenSaver\
 
+#include "stdafx.h"
+#include "settings.h"
 #include <windows.h>
-#include <tchar.h>
-#include <cstdio>
+#include <shlobj.h>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <sys/stat.h>
 
-#include "message.h"
-#include "matrix.h"
-
-// ------------------------------------------------------------------------------------
-// Globals (linker-visible)
+// Globals expected by other parts of the program
 TCHAR szMessages[MAXMESSAGES][MAXMSGLEN];
-int   nNumMessages = 0;
+int nNumMessages = 0;
 
-// Existing globals from the project
-extern TCHAR szAppName[];
-extern int Density;
-extern int MessageSpeed;
-extern int MatrixSpeed;
-extern int FontSize;
-extern TCHAR szFontName[];
-extern BOOL FontBold;
-extern BOOL EnablePreviews;
-extern BOOL RandomizeMessages;
+// Internal
+static std::wstring g_cfgPath;
 
-// ------------------------------------------------------------------------------------
-// Portable settings config path handling
-//   File name: matrix-settings-portable.cfg
-//   Location:  EXE folder if writable, else %APPDATA%\Matrix-ScreenSaver\
-// ------------------------------------------------------------------------------------
-
-static TCHAR g_cfgPath[MAX_PATH] = {0};
-
-static BOOL DirIsWritable(LPCTSTR dir)
-{
-    // Try to create/open a temp file to test writability.
-    TCHAR testPath[MAX_PATH];
-    lstrcpyn(testPath, dir, MAX_PATH);
-    size_t len = lstrlen(testPath);
-    if (len && testPath[len-1] != TEXT('\\'))
-        lstrcat(testPath, TEXT("\\"));
-    lstrcat(testPath, TEXT(".__matrix_write_test__.tmp"));
-
-    HANDLE h = CreateFile(testPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, NULL);
-    if (h == INVALID_HANDLE_VALUE)
-        return FALSE;
-    DWORD written = 0;
-    WriteFile(h, "ok", 2, &written, NULL);
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+static bool IsDirWritable(const std::wstring &dir) {
+    std::wstring testfile = dir + L"\\.__writetest";
+    HANDLE h = CreateFileW(testfile.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
     CloseHandle(h);
-    DeleteFile(testPath);
-    return TRUE;
+    DeleteFileW(testfile.c_str());
+    return true;
 }
 
-static void EnsureDirExists(LPCTSTR dir)
-{
-    CreateDirectory(dir, NULL); // no-op if exists
-}
+static std::wstring GetConfigPath() {
+    if (!g_cfgPath.empty()) return g_cfgPath;
 
-static void ComputeConfigPath()
-{
-    if (g_cfgPath[0] != 0) return;
+    // Try EXE folder
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring exedir(exe);
+    exedir = exedir.substr(0, exedir.find_last_of(L"\\/"));
 
-    // 1) Prefer the executable directory
-    TCHAR exePath[MAX_PATH];
-    GetModuleFileName(NULL, exePath, MAX_PATH);
-
-    // Strip filename to get directory
-    TCHAR exeDir[MAX_PATH];
-    lstrcpyn(exeDir, exePath, MAX_PATH);
-    for (int i = lstrlen(exeDir) - 1; i >= 0; --i) {
-        if (exeDir[i] == TEXT('\\') || exeDir[i] == TEXT('/')) { exeDir[i] = 0; break; }
+    if (IsDirWritable(exedir)) {
+        g_cfgPath = exedir + L"\\matrix-settings-portable.cfg";
+        return g_cfgPath;
     }
 
-    if (DirIsWritable(exeDir)) {
-        lstrcpyn(g_cfgPath, exeDir, MAX_PATH);
-        size_t len = lstrlen(g_cfgPath);
-        if (len && g_cfgPath[len-1] != TEXT('\\'))
-            lstrcat(g_cfgPath, TEXT("\\"));
-        lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
-        return;
+    // Fallback to %APPDATA%\Matrix-ScreenSaver\
+    wchar_t appdata[MAX_PATH];
+    SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appdata);
+    std::wstring dir = std::wstring(appdata) + L"\\Matrix-ScreenSaver";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    g_cfgPath = dir + L"\\matrix-settings-portable.cfg";
+    return g_cfgPath;
+}
+
+static bool FileExists(const std::wstring &path) {
+    struct _stat st;
+    return (_wstat(path.c_str(), &st) == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Template config on first run
+// ---------------------------------------------------------------------------
+static void WriteTemplateConfig(const std::wstring &path) {
+    std::wofstream f(path);
+    f << L"[Matrix]\n";
+    f << L"FontName=MS Sans Serif\n";
+    f << L"FontBold=1\n";
+    f << L"Randomize=0\n";
+    f << L"Previews=1\n";
+    f << L"FontSize=12\n";
+    f << L"Density=32\n";
+    f << L"MatrixSpeed=5\n";   // middle speed
+    f << L"MessageSpeed=150\n\n";
+
+    f << L"[Messages]\n";
+    f << L"Count=1\n";
+    f << L"Message0=Hello, World!\n\n";
+
+    f << L"; Matrix portable config\n";
+    f << L"; Comments here will remain if keys are updated\n\n";
+    f << L"[Notes]\n";
+    f << L"; nothing in this section is read/written\n";
+    f << L"; \n";
+    f << L"; FontName=MS Sans Serif\n";
+    f << L"; FontBold=1 1/0 True/False\n";
+    f << L"; Randomize=0 \"0\" means it will display your messages in the order saved 0,1,2,etc. (not random)\n";
+    f << L"; Previews=1\n";
+    f << L"; FontSize=12\n";
+    f << L"; Density=32\n";
+    f << L"; MatrixSpeed=1-10 (1 = slowest, 10 = fastest)\n";
+    f << L"; MessageSpeed= delay in ms between chars\n";
+}
+
+// ---------------------------------------------------------------------------
+// Load / Save
+// ---------------------------------------------------------------------------
+void LoadSettings() {
+    std::wstring cfg = GetConfigPath();
+    if (!FileExists(cfg)) {
+        WriteTemplateConfig(cfg);
     }
 
-    // 2) Fallback to %APPDATA%\Matrix-ScreenSaver
-    TCHAR appdata[MAX_PATH] = {0};
-    DWORD got = GetEnvironmentVariable(TEXT("APPDATA"), appdata, MAX_PATH);
-    if (got > 0 && got < MAX_PATH) {
-        TCHAR matrixDir[MAX_PATH];
-        lstrcpyn(matrixDir, appdata, MAX_PATH);
-        size_t len2 = lstrlen(matrixDir);
-        if (len2 && matrixDir[len2-1] != TEXT('\\'))
-            lstrcat(matrixDir, TEXT("\\"));
-        lstrcat(matrixDir, TEXT("Matrix-ScreenSaver"));
-        EnsureDirExists(matrixDir);
+    wchar_t buf[256];
 
-        lstrcpyn(g_cfgPath, matrixDir, MAX_PATH);
-        size_t len3 = lstrlen(g_cfgPath);
-        if (len3 && g_cfgPath[len3-1] != TEXT('\\'))
-            lstrcat(g_cfgPath, TEXT("\\"));
-        lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
-        return;
+    GetPrivateProfileStringW(L"Matrix", L"FontName", L"MS Sans Serif", buf, 256, cfg.c_str());
+    lstrcpynW(g_szFontName, buf, LF_FACESIZE);
+
+    g_bFontBold = GetPrivateProfileIntW(L"Matrix", L"FontBold", 1, cfg.c_str());
+    g_bRandomize = GetPrivateProfileIntW(L"Matrix", L"Randomize", 0, cfg.c_str());
+    g_bPreviews = GetPrivateProfileIntW(L"Matrix", L"Previews", 1, cfg.c_str());
+    g_nFontSize = GetPrivateProfileIntW(L"Matrix", L"FontSize", 12, cfg.c_str());
+    g_nDensity  = GetPrivateProfileIntW(L"Matrix", L"Density", 32, cfg.c_str());
+
+    int rawSpeed = GetPrivateProfileIntW(L"Matrix", L"MatrixSpeed", 5, cfg.c_str());
+    g_nMatrixSpeed = std::clamp(rawSpeed, 1, 10); // now intuitive: 1 slow ... 10 fast
+
+    g_nMessageSpeed = GetPrivateProfileIntW(L"Matrix", L"MessageSpeed", 150, cfg.c_str());
+
+    nNumMessages = GetPrivateProfileIntW(L"Messages", L"Count", 0, cfg.c_str());
+    if (nNumMessages > MAXMESSAGES) nNumMessages = MAXMESSAGES;
+
+    for (int i=0; i<nNumMessages; i++) {
+        wchar_t key[32];
+        wsprintfW(key, L"Message%d", i);
+        GetPrivateProfileStringW(L"Messages", key, L"", szMessages[i], MAXMSGLEN, cfg.c_str());
     }
-
-    // 3) Last resort: next to the EXE even if not writable
-    lstrcpyn(g_cfgPath, exeDir, MAX_PATH);
-    size_t len4 = lstrlen(g_cfgPath);
-    if (len4 && g_cfgPath[len4-1] != TEXT('\\'))
-        lstrcat(g_cfgPath, TEXT("\\"));
-    lstrcat(g_cfgPath, TEXT("matrix-settings-portable.cfg"));
 }
 
-// ------------------------------------------------------------------------------------
-// Minimal INI helpers (read via Win32, write via custom comment-preserving routine)
-// ------------------------------------------------------------------------------------
-
-static UINT INIGetInt(LPCTSTR section, LPCTSTR key, UINT defval)
-{
-    ComputeConfigPath();
-    return GetPrivateProfileInt(section, key, defval, g_cfgPath);
-}
-
-static void INIGetString(LPCTSTR section, LPCTSTR key, LPTSTR out, DWORD outcch, LPCTSTR defval)
-{
-    ComputeConfigPath();
-    GetPrivateProfileString(section, key, defval, out, outcch, g_cfgPath);
-}
-
-// --- Custom writer that preserves comments & unrelated lines ---
-
-static BOOL WriteWholeTextFile(LPCTSTR path, const TCHAR* text)
-{
-#ifdef UNICODE
-    // Write UTF-16LE with BOM
-    HANDLE h = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return FALSE;
-    WORD bom = 0xFEFF;
-    DWORD wrote = 0;
-    WriteFile(h, &bom, sizeof(bom), &wrote, NULL);
-    size_t len = lstrlen(text);
-    WriteFile(h, text, (DWORD)(len * sizeof(TCHAR)), &wrote, NULL);
-    CloseHandle(h);
-    return TRUE;
-#else
-    HANDLE h = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return FALSE;
-    DWORD wrote = 0;
-    size_t len = lstrlen(text);
-    WriteFile(h, text, (DWORD)len, &wrote, NULL);
-    CloseHandle(h);
-    return TRUE;
-#endif
-}
-
-static BOOL ReadWholeTextFile(LPCTSTR path, LPTSTR buffer, DWORD cchBuffer, DWORD* outLenChars)
-{
-    HANDLE h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return FALSE;
-    DWORD sizeBytes = GetFileSize(h, NULL);
-    if (sizeBytes == INVALID_FILE_SIZE) { CloseHandle(h); return FALSE; }
-
-#ifdef UNICODE
-    // Expect UTF-16LE or ANSI; if ANSI, convert
-    DWORD read = 0;
-    BYTE* tmp = (BYTE*)LocalAlloc(LMEM_FIXED, sizeBytes + 2);
-    if (!tmp) { CloseHandle(h); return FALSE; }
-    ReadFile(h, tmp, sizeBytes, &read, NULL);
-    CloseHandle(h);
-
-    if (read >= 2 && tmp[0] == 0xFF && tmp[1] == 0xFE) {
-        // UTF-16LE
-        DWORD charsAvail = (read - 2) / 2;
-        if (charsAvail >= cchBuffer) charsAvail = cchBuffer - 1;
-        memcpy(buffer, tmp + 2, charsAvail * sizeof(TCHAR));
-        buffer[charsAvail] = 0;
-        if (outLenChars) *outLenChars = charsAvail;
-        LocalFree(tmp);
-        return TRUE;
-    } else {
-        // ANSI -> Unicode
-        int need = MultiByteToWideChar(CP_ACP, 0, (LPCSTR)tmp, read, NULL, 0);
-        if (need >= (int)cchBuffer) need = (int)cchBuffer - 1;
-        MultiByteToWideChar(CP_ACP, 0, (LPCSTR)tmp, read, buffer, need);
-        buffer[need] = 0;
-        if (outLenChars) *outLenChars = need;
-        LocalFree(tmp);
-        return TRUE;
-    }
-#else
-    DWORD read = 0;
-    if (sizeBytes >= cchBuffer) sizeBytes = cchBuffer - 1;
-    ReadFile(h, buffer, sizeBytes, &read, NULL);
-    CloseHandle(h);
-    buffer[read] = 0;
-    if (outLenChars) *outLenChars = read;
-    return TRUE;
-#endif
-}
-
-static BOOL EnsureSectionExistsAndSetKey(LPTSTR text, DWORD cchText, LPCTSTR section, LPCTSTR key, LPCTSTR value)
-{
-    // Operate on CRLF, keep comments/blank lines. Append section if missing.
-    TCHAR secHdr[128];
-    wsprintf(secHdr, TEXT("[%s]"), section);
-
-    // Find section start (content begins after its header line)
-    LPTSTR p = text;
-    LPTSTR secStart = NULL;
-    while (*p) {
-        LPTSTR line = p;
-        while (*p && *p != TEXT('\r') && *p != TEXT('\n')) p++;
-        LPTSTR next = p;
-        if (*p == TEXT('\r')) { p++; if (*p == TEXT('\n')) p++; }
-        else if (*p == TEXT('\n')) { p++; }
-
-        while (*line == TEXT(' ') || *line == TEXT('\t')) line++;
-        if (line[0] == TEXT('[')) {
-            if (_tcsnicmp(line, secHdr, lstrlen(secHdr)) == 0) {
-                secStart = next;
+static void UpdateKey(const std::wstring &section, const std::wstring &key, const std::wstring &val, std::vector<std::wstring> &lines) {
+    std::wstring header = L"[" + section + L"]";
+    bool inSec = false, found=false;
+    for (size_t i=0; i<lines.size(); i++) {
+        std::wstring s = lines[i];
+        if (!s.empty() && s[0]==L'[') {
+            inSec = (_wcsicmp(s.c_str(), header.c_str())==0);
+        } else if (inSec) {
+            if (_wcsnicmp(s.c_str(), key.c_str(), key.size())==0 && s[key.size()]==L'=') {
+                lines[i] = key + L"=" + val;
+                found=true;
                 break;
             }
         }
     }
-
-    // If section not found, append it at end
-    if (!secStart) {
-        size_t curLen = lstrlen(text);
-        size_t addLen = lstrlen(secHdr) + lstrlen(TEXT("\r\n\r\n")) + 1;
-        if (curLen + addLen >= cchText) return FALSE;
-        if (curLen > 0 && text[curLen-1] != TEXT('\n')) lstrcat(text, TEXT("\r\n"));
-        lstrcat(text, secHdr);
-        lstrcat(text, TEXT("\r\n"));
-        lstrcat(text, TEXT("\r\n"));
-        secStart = text + lstrlen(text);
-    }
-
-    // Determine section end (next header or EOF)
-    LPTSTR q = secStart;
-    LPTSTR sectionEnd = q;
-    while (*q) {
-        LPTSTR line = q;
-        while (*q && *q != TEXT('\r') && *q != TEXT('\n')) q++;
-        LPTSTR next = q;
-        if (*q == TEXT('\r')) { q++; if (*q == TEXT('\n')) q++; }
-        else if (*q == TEXT('\n')) { q++; }
-
-        LPTSTR t = line;
-        while (*t == TEXT(' ') || *t == TEXT('\t')) t++;
-        if (*t == TEXT('[')) { sectionEnd = line; break; }
-        if (!*q) { sectionEnd = q; break; }
-    }
-    if (!*q) sectionEnd = q;
-
-    // Build "key=" matcher
-    TCHAR keyEq[256];
-    wsprintf(keyEq, TEXT("%s="), key);
-
-    // Search key between secStart and sectionEnd
-    LPTSTR pos = secStart;
-    while (pos < sectionEnd) {
-        LPTSTR line = pos;
-        while (pos < sectionEnd && *pos != TEXT('\r') && *pos != TEXT('\n')) pos++;
-        LPTSTR next = pos;
-        if (pos < sectionEnd && *pos == TEXT('\r')) { pos++; if (pos < sectionEnd && *pos == TEXT('\n')) pos++; }
-        else if (pos < sectionEnd && *pos == TEXT('\n')) { pos++; }
-
-        LPTSTR t = line;
-        while (*t == TEXT(' ') || *t == TEXT('\t')) t++;
-        if (*t == TEXT(';') || *t == 0) continue; // comment/blank
-        if (_tcsnicmp(t, keyEq, lstrlen(keyEq)) == 0) {
-            // replace this line with key=value
-            TCHAR newLine[1024];
-            wsprintf(newLine, TEXT("%s=%s"), key, value);
-            size_t newLen = lstrlen(newLine);
-            size_t oldLen = (size_t)(next - line);
-            size_t tailLen = lstrlen(next);
-
-            if (newLen + 2 + (line - text) + tailLen + 1 >= cchText) return FALSE;
-
-            memmove(line + newLen, next, (tailLen + 1) * sizeof(TCHAR));
-            memcpy(line, newLine, newLen * sizeof(TCHAR));
-            return TRUE;
-        }
-    }
-
-    // Key not found; insert before sectionEnd
-    {
-        TCHAR newLine[1024];
-        wsprintf(newLine, TEXT("%s=%s\r\n"), key, value);
-        size_t insLen = lstrlen(newLine);
-        size_t headLen = (size_t)(sectionEnd - text);
-        size_t curTotal = lstrlen(text);
-
-        if (curTotal + insLen + 1 >= cchText) return FALSE;
-
-        memmove(sectionEnd + insLen, sectionEnd, (curTotal - headLen + 1) * sizeof(TCHAR));
-        memcpy(sectionEnd, newLine, insLen * sizeof(TCHAR));
-        return TRUE;
+    if (!found) {
+        if (!lines.empty() && lines.back().empty()) lines.pop_back();
+        lines.push_back(header);
+        lines.push_back(key + L"=" + val);
     }
 }
 
-static BOOL INISetString_Preserve(LPCTSTR section, LPCTSTR key, LPCTSTR val)
-{
-    ComputeConfigPath();
-    const DWORD BUFSZ = 64 * 1024; // 64KB should be plenty for our cfg
-    LPTSTR buf = (LPTSTR)LocalAlloc(LMEM_FIXED, BUFSZ * sizeof(TCHAR));
-    if (!buf) return FALSE;
+void SaveSettings() {
+    std::wstring cfg = GetConfigPath();
 
-    DWORD outLen = 0;
-    buf[0] = 0;
-    ReadWholeTextFile(g_cfgPath, buf, BUFSZ, &outLen);
+    // load existing lines
+    std::wifstream fi(cfg);
+    std::vector<std::wstring> lines;
+    std::wstring line;
+    while (std::getline(fi, line)) lines.push_back(line);
+    fi.close();
 
-    BOOL ok = EnsureSectionExistsAndSetKey(buf, BUFSZ, section, key, val);
-    if (ok) ok = WriteWholeTextFile(g_cfgPath, buf);
+    // Update keys
+    UpdateKey(L"Matrix", L"FontName", g_szFontName, lines);
+    UpdateKey(L"Matrix", L"FontBold", std::to_wstring(g_bFontBold), lines);
+    UpdateKey(L"Matrix", L"Randomize", std::to_wstring(g_bRandomize), lines);
+    UpdateKey(L"Matrix", L"Previews", std::to_wstring(g_bPreviews), lines);
+    UpdateKey(L"Matrix", L"FontSize", std::to_wstring(g_nFontSize), lines);
+    UpdateKey(L"Matrix", L"Density", std::to_wstring(g_nDensity), lines);
+    UpdateKey(L"Matrix", L"MatrixSpeed", std::to_wstring(std::clamp(g_nMatrixSpeed,1,10)), lines);
+    UpdateKey(L"Matrix", L"MessageSpeed", std::to_wstring(g_nMessageSpeed), lines);
 
-    LocalFree(buf);
-    return ok;
-}
-
-static BOOL INISetInt_Preserve(LPCTSTR section, LPCTSTR key, UINT val)
-{
-    TCHAR tmp[32];
-    wsprintf(tmp, TEXT("%u"), val);
-    return INISetString_Preserve(section, key, tmp);
-}
-
-// ------------------------------------------------------------------------------------
-// First-run template generator (with comments) 
-// ------------------------------------------------------------------------------------
-
-static void EnsureTemplateCfgExists()
-{
-    ComputeConfigPath();
-    DWORD attrs = GetFileAttributes(g_cfgPath);
-    if (attrs != INVALID_FILE_ATTRIBUTES) return; // already exists
-
-    // Build directory if needed (strip filename to get directory)
-    TCHAR pathCopy[MAX_PATH];
-    lstrcpyn(pathCopy, g_cfgPath, MAX_PATH);
-    for (int i = lstrlen(pathCopy) - 1; i >= 0; --i) {
-        if (pathCopy[i] == TEXT('\\') || pathCopy[i] == TEXT('/')) { pathCopy[i] = 0; break; }
+    UpdateKey(L"Messages", L"Count", std::to_wstring(nNumMessages), lines);
+    for (int i=0;i<nNumMessages;i++) {
+        wchar_t key[32];
+        wsprintfW(key,L"Message%d",i);
+        UpdateKey(L"Messages", key, szMessages[i], lines);
     }
-    if (pathCopy[0]) EnsureDirExists(pathCopy);
 
-    // Template content (no trailing backslashes in comments)
-    const TCHAR* tpl =
-        TEXT("; Matrix portable config") TEXT("\r\n")
-        TEXT("; Comments here will remain if keys are updated") TEXT("\r\n")
-        TEXT("\r\n")
-        TEXT("[Matrix]") TEXT("\r\n")
-        TEXT("FontName=MS Sans Serif") TEXT("\r\n")
-        TEXT("FontBold=1") TEXT("\r\n")
-        TEXT("Randomize=0") TEXT("\r\n")
-        TEXT("Previews=1") TEXT("\r\n")
-        TEXT("FontSize=12") TEXT("\r\n")
-        TEXT("Density=32") TEXT("\r\n")
-        TEXT("MatrixSpeed=1") TEXT("\r\n")
-        TEXT("MessageSpeed=150") TEXT("\r\n")
-        TEXT("\r\n")
-        TEXT("[Messages]") TEXT("\r\n")
-        TEXT("Count=1") TEXT("\r\n")
-        TEXT("Message0=Hey, Fellow") TEXT("\r\n")
-        TEXT("\r\n")
-        TEXT("; Additional notes and guidance") TEXT("\r\n")
-        TEXT("[Notes]") TEXT("\r\n")
-        TEXT("; nothing in this section is read/written") TEXT("\r\n")
-        TEXT("; ") TEXT("\r\n")
-        TEXT("; FontName=MS Sans Serif") TEXT("\r\n")
-        TEXT("; FontBold=1  1/0 True/False") TEXT("\r\n")
-        TEXT("; Randomize=0  \"0\" displays your messages in saved order 0,1,2,... (not random)") TEXT("\r\n")
-        TEXT("; Previews=1") TEXT("\r\n")
-        TEXT("; FontSize=12") TEXT("\r\n")
-        TEXT("; Density=32") TEXT("\r\n")
-        TEXT("; MatrixSpeed=  overall animation speed (1..10)") TEXT("\r\n")
-        TEXT("; MessageSpeed= how fast messages burn in (50..500)") TEXT("\r\n")
-        TEXT("; ") TEXT("\r\n");
-
-    WriteWholeTextFile(g_cfgPath, tpl);
+    // write back
+    std::wofstream fo(cfg, std::ios::trunc);
+    for (auto &l : lines) fo << l << L"\n";
 }
-
-// ------------------------------------------------------------------------------------
-// Settings I/O
-// ------------------------------------------------------------------------------------
-
-void LoadSettings()
-{
-    EnsureTemplateCfgExists(); // create commented template on first run
-
-    // Load with defaults (defensive: keep current values if missing)
-    MessageSpeed = INIGetInt(TEXT("Matrix"), TEXT("MessageSpeed"), MessageSpeed);
-    MatrixSpeed  = INIGetInt(TEXT("Matrix"), TEXT("MatrixSpeed"),  MatrixSpeed);
-    Density      = INIGetInt(TEXT("Matrix"), TEXT("Density"),      Density);
-    FontSize     = INIGetInt(TEXT("Matrix"), TEXT("FontSize"),     FontSize);
-
-    EnablePreviews    = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Previews"),   EnablePreviews ? 1 : 0);
-    RandomizeMessages = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("Randomize"),  RandomizeMessages ? 1 : 0);
-    FontBold          = (BOOL)INIGetInt(TEXT("Matrix"), TEXT("FontBold"),   FontBold ? 1 : 0);
-
-    INIGetString(TEXT("Matrix"), TEXT("FontName"), szFontName, MAX_PATH, szFontName);
-
-    // Messages
-    nNumMessages = (int)INIGetInt(TEXT("Messages"), TEXT("Count"), nNumMessages);
-    if (nNumMessages < 0) nNumMessages = 0;
-    if (nNumMessages > MAXMESSAGES) nNumMessages = MAXMESSAGES;
-
-    for (int i = 0; i < nNumMessages; ++i)
-    {
-        TCHAR key[32];
-        wsprintf(key, TEXT("Message%d"), i);
-        INIGetString(TEXT("Messages"), key, szMessages[i], MAXMSGLEN, TEXT(""));
-        szMessages[i][MAXMSGLEN-1] = 0;
-    }
-}
-
-void SaveSettings()
-{
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("MessageSpeed"), (UINT)MessageSpeed);
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("MatrixSpeed"),  (UINT)MatrixSpeed);
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("Density"),      (UINT)Density);
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("FontSize"),     (UINT)FontSize);
-
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("Previews"),     EnablePreviews ? 1 : 0);
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("Randomize"),    RandomizeMessages ? 1 : 0);
-    INISetInt_Preserve(TEXT("Matrix"), TEXT("FontBold"),     FontBold ? 1 : 0);
-
-    INISetString_Preserve(TEXT("Matrix"), TEXT("FontName"),  szFontName);
-
-    // Messages
-    INISetInt_Preserve(TEXT("Messages"), TEXT("Count"), (UINT)nNumMessages);
-    for (int i = 0; i < nNumMessages; ++i)
-    {
-        TCHAR key[32];
-        wsprintf(key, TEXT("Message%d"), i);
-        INISetString_Preserve(TEXT("Messages"), key, szMessages[i]);
-    }
-}
-
