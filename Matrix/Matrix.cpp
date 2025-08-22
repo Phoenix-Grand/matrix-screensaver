@@ -589,3 +589,4 @@ LRESULT CALLBACK WndProc (HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 
 	return DefWindowProc (hwnd, iMsg, wParam, lParam);
 }
+
